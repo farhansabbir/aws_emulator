@@ -34,10 +34,14 @@ Run the Python server. This listens on port 4566 (simulating LocalStack/AWS endp
 python -m venv venv && source venv/bin/activate
 
 # Install dependencies (Flask)
+`bash
 pip install flask
+`bash
 
 # Run the emulator
+`bash
 python3 main.py
+`
 
 
 2. Run Terraform
