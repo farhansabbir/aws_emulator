@@ -7,7 +7,7 @@ app = Flask(__name__)
 # ==========================================
 # RELATIONAL STATE STORE
 # ==========================================
-# Initialize a pool of 100 Simulated Public IPs
+# 1. Initialize Public IP Pool (100 IPs)
 public_ip_pool = [f"203.0.113.{i}" for i in range(1, 101)]
 
 state = {
@@ -30,7 +30,7 @@ def get_filter(form_data, filter_name):
         if val == filter_name: 
             prefix = key.rsplit('.', 1)[0] 
             return form_data.get(f"{prefix}.Value.1")
-            
+    
     mapping = {
         'group-id': "GroupId.1",
         'vpc-id': "VpcId.1", 
@@ -51,7 +51,7 @@ def find_resource_by_id(res_id):
     return None
 
 def allocate_public_ip():
-    """ pops a public IP from the pool if available """
+    """Pops a public IP from the pool if available."""
     if public_ip_pool:
         return public_ip_pool.pop(0)
     return None
@@ -143,7 +143,7 @@ def gateway():
         return Response(xml_wrapper(action, f"<tagSet>{items}</tagSet>"), mimetype='text/xml')
 
     # ------------------------------------------
-    # 4. NETWORK INTERFACES (WITH PUBLIC IP SUPPORT)
+    # 4. NETWORK INTERFACES
     # ------------------------------------------
     elif action == "DescribeNetworkInterfaces":
         target_id = get_filter(request.form, 'network-interface-id')
@@ -153,7 +153,7 @@ def gateway():
             
             sg_xml = "".join([f"<item><groupId>{sg}</groupId><groupName>default</groupName></item>" for sg in d.get('security_groups', [])])
             
-            # --- Build Public IP Association XML ---
+            # --- Build Public IP Association ---
             association_xml = ""
             if d.get('public_ip'):
                 association_xml = f"""
@@ -198,7 +198,7 @@ def gateway():
         return Response(xml_wrapper(action, "<return>true</return>"), mimetype='text/xml')
 
     # ------------------------------------------
-    # 5. EC2 INSTANCE OPERATIONS (WITH PUBLIC IP LOGIC)
+    # 5. EC2 INSTANCE OPERATIONS (Public IP & Destruction Fix)
     # ------------------------------------------
     elif action == "DescribeInstanceTypes":
         req_type = get_filter(request.form, 'instance-type') or "t2.micro"
@@ -222,7 +222,7 @@ def gateway():
         vpc_id = state['subnets'].get(subnet_id, {}).get('vpc_id', 'vpc-unknown')
         private_ip = f"10.0.1.{len(state['instances']) + 10}" 
         
-        # --- PUBLIC IP ALLOCATION LOGIC ---
+        # --- ALLOCATE PUBLIC IP IF SUBNET REQUESTS IT ---
         public_ip = None
         subnet_config = state['subnets'].get(subnet_id, {})
         if subnet_config.get('map_public_ip_on_launch') == 'true':
@@ -283,11 +283,11 @@ def gateway():
             eni = state["network_interfaces"].get(d['eni_id'], {})
             sg_xml = "".join([f"<item><groupId>{sg}</groupId><groupName>sg-name</groupName></item>" for sg in eni.get('security_groups', [])])
 
-            # --- Public IP Logic for ENI XML ---
+            # --- Public IP for ENI XML ---
             association_xml = ""
             public_ip_tag = ""
             if d.get('public_ip'):
-                public_ip_tag = f"<ipAddress>{d['public_ip']}</ipAddress>" # Legacy top-level tag
+                public_ip_tag = f"<ipAddress>{d['public_ip']}</ipAddress>"
                 association_xml = f"""
                 <association>
                     <publicIp>{d['public_ip']}</publicIp>
@@ -355,15 +355,18 @@ def gateway():
     elif action == "TerminateInstances":
         target_id = request.form.get("InstanceId.1")
         if target_id and target_id in state["instances"]:
-            eni_id = state["instances"][target_id].get("eni_id")
-            # If public IP was used, we could return it to pool here if we wanted
-            if eni_id and eni_id in state["network_interfaces"]: del state["network_interfaces"][eni_id]
-            del state["instances"][target_id]
+            # THE FIX: Mark as terminated, DO NOT DELETE yet
+            # This allows DescribeInstances to return "terminated", satisfying Terraform
+            state["instances"][target_id]['state_code'] = "48"
+            state["instances"][target_id]['state_name'] = "terminated"
+            
+            # Note: We keep the ENI and Instance in memory so future calls see the state change.
+            
         xml_body = f"""<instancesSet><item><instanceId>{target_id}</instanceId><currentState><code>48</code><name>terminated</name></currentState><previousState><code>16</code><name>running</name></previousState></item></instancesSet>"""
         return Response(xml_wrapper(action, xml_body), mimetype='text/xml')
 
     # ------------------------------------------
-    # 6. SECURITY GROUPS
+    # 6. SECURITY GROUPS, VPC, SUBNET, etc.
     # ------------------------------------------
     elif action == "DescribeSecurityGroups":
         target_id = get_filter(request.form, 'group-id')
@@ -389,9 +392,6 @@ def gateway():
                 rules_xml += f"""<item><securityGroupRuleId>{rule['id']}</securityGroupRuleId><groupId>{sg_id}</groupId><ownerId>{state['account_id']}</ownerId><isEgress>false</isEgress><ipProtocol>{rule['proto']}</ipProtocol><fromPort>{rule['from']}</fromPort><toPort>{rule['to']}</toPort><cidrIpv4>{rule['cidr']}</cidrIpv4></item>"""
         return Response(xml_wrapper(action, f"<securityGroupRuleSet>{rules_xml}</securityGroupRuleSet>"), mimetype='text/xml')
 
-    # ------------------------------------------
-    # 7. DISCOVERY & CREATION
-    # ------------------------------------------
     elif action == "DescribeVpcs":
         items = "".join([f"<item><vpcId>{id}</vpcId><state>available</state><cidrBlock>{d['cidr']}</cidrBlock><isDefault>false</isDefault><instanceTenancy>default</instanceTenancy></item>" for id, d in state["vpcs"].items()])
         return Response(xml_wrapper(action, f"<vpcSet>{items}</vpcSet>"), mimetype='text/xml')
@@ -415,8 +415,7 @@ def gateway():
         s_id = request.form.get("SubnetId")
         if s_id in state["subnets"]:
             val = request.form.get("MapPublicIpOnLaunch.Value")
-            if val:
-                state["subnets"][s_id]["map_public_ip_on_launch"] = val
+            if val: state["subnets"][s_id]["map_public_ip_on_launch"] = val
         return Response(xml_wrapper(action, "<return>true</return>"), mimetype='text/xml')
 
     elif action == "DescribeNetworkAcls":
@@ -450,17 +449,9 @@ def gateway():
 
     elif action == "CreateSubnet":
         s_id = f"subnet-{uuid.uuid4().hex[:8]}"
-        state["subnets"][s_id] = {
-            "vpc_id": request.form.get("VpcId"), 
-            "cidr": request.form.get("CidrBlock"), 
-            "tags": {},
-            "map_public_ip_on_launch": "false" 
-        }
+        state["subnets"][s_id] = {"vpc_id": request.form.get("VpcId"), "cidr": request.form.get("CidrBlock"), "tags": {}, "map_public_ip_on_launch": "false"}
         return Response(xml_wrapper(action, f"<subnet><subnetId>{s_id}</subnetId><state>available</state></subnet>"), mimetype='text/xml')
 
-    # ------------------------------------------
-    # 8. RULES & DELETE
-    # ------------------------------------------
     elif action == "AuthorizeSecurityGroupIngress":
         sg_id = request.form.get("GroupId")
         if sg_id in state["security_groups"]:
