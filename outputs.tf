@@ -35,6 +35,10 @@ output "emulator_state_dump" {
         public_ip_on_launch = aws_subnet.private_subnet.map_public_ip_on_launch
       }
       ]
+      IGW = {
+        id = aws_internet_gateway.default_igw.id
+      }
+    
     }
   }
 }

@@ -52,6 +52,10 @@ resource "aws_subnet" "private_subnet" {
   map_public_ip_on_launch = false
 }
 
+resource "aws_internet_gateway" "default_igw" {
+    vpc_id = aws_vpc.default_vpc.id
+}
+
 resource "aws_security_group" "web" {
     vpc_id = aws_vpc.default_vpc.id
 }
@@ -86,4 +90,18 @@ output "instance_ip" {
   value = aws_instance.app_server.private_ip
 }
 data "aws_caller_identity" "current" {}
+
+resource "aws_eip" "nat" {
+  domain = "vpc"
+}
+
+resource "aws_nat_gateway" "example" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.default_subnet.id
+}
+
+# The IP you use for whitelisting
+output "outbound_ip_address" {
+  value = aws_eip.nat.public_ip
+}
 
