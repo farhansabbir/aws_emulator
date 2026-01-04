@@ -41,6 +41,8 @@ resource "aws_vpc" "default_vpc" {
 resource "aws_subnet" "default_subnet" {
   vpc_id     = aws_vpc.default_vpc.id
   cidr_block = "10.0.10.0/24"
+  availability_zone = "us-east-1a"
+  map_public_ip_on_launch = true
 }
 
 resource "aws_security_group" "web" {
@@ -65,6 +67,8 @@ resource "aws_instance" "app_server" {
   
   # Link to the security group we made earlier
   vpc_security_group_ids = [aws_security_group.web.id]
+
+
 
   tags = {
     Name = "Emulator-Instance"
