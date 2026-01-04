@@ -1,61 +1,54 @@
-# Lightweight AWS Emulator for Terraform
+# Oostad: Lightweight AWS Emulator for Terraform
 
 A lightweight, in-memory AWS API emulator written in Python (Flask). This tool mocks the behavior of key AWS services (EC2, VPC, Networking) to allow for fast, cost-free local testing of Terraform configurations.
 
 It strictly adheres to the AWS XML API structure to satisfy the HashiCorp Terraform AWS Provider.
 
-🚀 Features
+## 🚀 Features
 
-Compute: EC2 Instances (Run, Describe, Terminate, Attribute modification).
+* **Compute**: EC2 Instances (Run, Describe, Terminate, Attribute modification).
+* **Networking**: VPCs, Subnets (Public/Private), Internet Gateways, NAT Gateways.
+* **Security**: Security Groups, Ingress/Egress rules, Network ACLs.
+* **IP Management**: Elastic IPs (EIP) and Public IP auto-assignment pools.
+* **Tagging**: Full resource tagging support.
 
-Networking: VPCs, Subnets (Public/Private), Internet Gateways, NAT Gateways.
+## 📦 Prerequisites
 
-Security: Security Groups, Ingress/Egress rules, Network ACLs.
+* Python 3.x
+* Terraform
+* `pip`
 
-IP Management: Elastic IPs (EIP) and Public IP auto-assignment pools.
+## 🛠️ Quick Start
 
-Tagging: Full resource tagging support.
+### 1. Start the Emulator
+Run the Python server. This listens on port `4566` (simulating LocalStack/AWS endpoints).
 
-📦 Prerequisites
-
-Python 3.x
-
-Terraform
-
-pip
-
-🛠️ Quick Start
-
-1. Start the Emulator
-
-Run the Python server. This listens on port 4566 (simulating LocalStack/AWS endpoints).
-
+```bash
 # Set up virtual environment
 python -m venv venv && source venv/bin/activate
 
 # Install dependencies (Flask)
-`bash
 pip install flask
-`bash
 
 # Run the emulator
-`bash
 python3 main.py
-`
+```
 
-
-2. Run Terraform
-
+### 2. Run Terraform
 Open a new terminal window and run your Terraform infrastructure code against the local emulator.
 
+```bash
 terraform init
 terraform apply -auto-approve
+```
 
+---
 
-📄 Configuration (main.tf)
+## 📄 Configuration (`main.tf`)
 
-Save the following code as main.tf. This configuration sets up a complete VPC network with public/private subnets, gateways, and a web server instance.
+Save the following code as `main.tf`. This configuration sets up a complete VPC network with public/private subnets, gateways, and a web server instance.
 
+```hcl
 provider "aws" {
   access_key                  = "test"
   secret_key                  = "test"
@@ -195,12 +188,15 @@ output "emulator_state_dump" {
     }
   }
 }
+```
 
+---
 
-✅ Expected Output
+## ✅ Expected Output
 
-When running terraform apply, the emulator correctly handles the creation order (VPC -> Subnet -> Security Groups -> Instances) and resource linking.
+When running `terraform apply`, the emulator correctly handles the creation order (VPC -> Subnet -> Security Groups -> Instances) and resource linking.
 
+```text
 aws_eip.nat: Creating...
 aws_vpc.default_vpc: Creating...
 aws_eip.nat: Creation complete after 0s [id=eipalloc-893f2a2d]
@@ -265,3 +261,4 @@ emulator_state_dump = {
 }
 instance_ip = "10.0.1.10"
 outbound_ip_address = "52.99.100.1"
+```
