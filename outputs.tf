@@ -22,11 +22,19 @@ output "emulator_state_dump" {
     vpc = {
       id         = aws_vpc.default_vpc.id
       cidr       = aws_vpc.default_vpc.cidr_block
-      subnet     = {
+      subnet     = [{
         id   = aws_subnet.default_subnet.id
         cidr = aws_subnet.default_subnet.cidr_block
         az   = aws_subnet.default_subnet.availability_zone
+        public_ip_on_launch = aws_subnet.default_subnet.map_public_ip_on_launch
+      },
+      {
+        id   = aws_subnet.private_subnet.id
+        cidr = aws_subnet.private_subnet.cidr_block
+        az   = aws_subnet.private_subnet.availability_zone
+        public_ip_on_launch = aws_subnet.private_subnet.map_public_ip_on_launch
       }
+      ]
     }
   }
 }

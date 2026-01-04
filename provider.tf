@@ -45,6 +45,13 @@ resource "aws_subnet" "default_subnet" {
   map_public_ip_on_launch = true
 }
 
+resource "aws_subnet" "private_subnet" {
+  vpc_id     = aws_vpc.default_vpc.id
+  cidr_block = "10.0.100.0/24"
+  availability_zone = "us-east-1a"
+  map_public_ip_on_launch = false
+}
+
 resource "aws_security_group" "web" {
     vpc_id = aws_vpc.default_vpc.id
 }
