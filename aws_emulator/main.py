@@ -56,7 +56,7 @@ def endpoint():
         if vid: objs = [o for o in objs if o.vpc_id == vid]
         return Response(XML.wrap(action, XML.dump_list("subnetSet", objs)), mimetype="text/xml")
 
-    # --- Security Groups ---
+    # --- Security Groups (FIXED FILTERING) ---
     if action == "CreateSecurityGroup":
         sg = SecurityGroup(req.get("VpcId"), req.get("GroupName"), req.get("GroupDescription"))
         backend.security_groups[sg.id] = sg
@@ -70,7 +70,16 @@ def endpoint():
 
     if action == "DescribeSecurityGroups":
         gid = req.get_filter("group-id")
-        objs = [backend.security_groups[gid]] if gid and gid in backend.security_groups else list(backend.security_groups.values())
+        vid = req.get_filter("vpc-id")
+        name = req.get_filter("group-name")
+        
+        objs = list(backend.security_groups.values())
+        
+        # Apply filters strictly
+        if gid: objs = [o for o in objs if o.id == gid]
+        if vid: objs = [o for o in objs if o.vpc_id == vid]
+        if name: objs = [o for o in objs if o.name == name]
+        
         return Response(XML.wrap(action, XML.dump_list("securityGroupInfo", objs)), mimetype="text/xml")
 
     # --- Network ACLs & Routes ---
@@ -97,7 +106,6 @@ def endpoint():
         res_xml = "".join([f"<item><reservationId>r-mock</reservationId><ownerId>{backend.account_id}</ownerId><instancesSet><item>{i.to_xml()}</item></instancesSet></item>" for i in objs])
         return Response(XML.wrap(action, f"<reservationSet>{res_xml}</reservationSet>"), mimetype="text/xml")
 
-    # Instance Type Stub
     if action == "DescribeInstanceTypes":
         req_type = req.get_filter("instance-type") or "t2.micro"
         xml = f"""<instanceTypeSet><item><instanceType>{req_type}</instanceType><processorInfo><supportedArchitectures><item>x86_64</item></supportedArchitectures></processorInfo><vCpuInfo><defaultVCpus>1</defaultVCpus></vCpuInfo><memoryInfo><sizeInMiB>1024</sizeInMiB></memoryInfo><instanceStorageSupported>false</instanceStorageSupported></item></instanceTypeSet>"""
@@ -109,6 +117,18 @@ def endpoint():
             backend.instances[iid].state_code = "48"; backend.instances[iid].state_name = "terminated"
         return Response(XML.wrap(action, f"<instancesSet><item><instanceId>{iid}</instanceId><currentState><code>48</code><name>terminated</name></currentState></item></instancesSet>"), mimetype="text/xml")
 
+    if action == "StopInstances":
+        iid = req.get("InstanceId.1")
+        if iid in backend.instances:
+            backend.instances[iid].state_code = "80"; backend.instances[iid].state_name = "stopped"
+        return Response(XML.wrap(action, f"<instancesSet><item><instanceId>{iid}</instanceId><currentState><code>80</code><name>stopped</name></currentState><previousState><code>16</code><name>running</name></previousState></item></instancesSet>"), mimetype="text/xml")
+
+    if action == "StartInstances":
+        iid = req.get("InstanceId.1")
+        if iid in backend.instances:
+            backend.instances[iid].state_code = "16"; backend.instances[iid].state_name = "running"
+        return Response(XML.wrap(action, f"<instancesSet><item><instanceId>{iid}</instanceId><currentState><code>16</code><name>running</name></currentState><previousState><code>80</code><name>stopped</name></previousState></item></instancesSet>"), mimetype="text/xml")
+
     if action == "DescribeInstanceAttribute":
         iid = req.get("InstanceId"); attr = req.get("Attribute")
         val = backend.instances[iid].attrs.get(attr, "true") if iid in backend.instances else "true"
@@ -118,6 +138,7 @@ def endpoint():
         iid = req.get("InstanceId")
         if iid in backend.instances:
             if req.get("SourceDestCheck.Value"): backend.instances[iid].attrs["sourceDestCheck"] = req.get("SourceDestCheck.Value")
+            if req.get("UserData.Value"): backend.instances[iid].attrs["userData"] = req.get("UserData.Value")
         return Response(XML.wrap(action, "<return>true</return>"), mimetype="text/xml")
 
     # --- Gateways & EIPs ---
