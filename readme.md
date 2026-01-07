@@ -1,4 +1,4 @@
-# Oostad: Lightweight AWS Emulator for Terraform
+# Lightweight AWS Emulator for Terraform
 
 A lightweight, in-memory AWS API emulator written in Python (Flask). This tool mocks the behavior of key AWS services (EC2, VPC, Networking) to allow for fast, cost-free local testing of Terraform configurations.
 
