@@ -41,9 +41,19 @@ def _new_secret_key():
     return secrets.token_urlsafe(30)[:40]
 
 
+# Arbitrary constant, just needs to be unique per schema-owning module so
+# concurrent callers (multiple gunicorn workers in one process, or multiple
+# container replicas at cold start) serialize on schema creation instead of
+# racing CREATE TABLE IF NOT EXISTS against Postgres's catalog (which is
+# NOT safe under concurrency - two racing creates can both pass the "does
+# it exist" check and then collide on pg_type, crashing the loser).
+_SCHEMA_LOCK_ID = 727271001
+
+
 def init_schema():
     with db.get_conn() as conn:
         with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK_ID,))
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS iam_users (

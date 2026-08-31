@@ -1,0 +1,67 @@
+name: aws_emulator
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: aws_emulator
+      POSTGRES_USER: aws_emulator
+      POSTGRES_PASSWORD: aws_emulator
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aws_emulator"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # EC2/VPC/IAM/STS "control plane". EC2/VPC state is in-memory, so this is
+  # meant to run as a single instance - see the README for why it isn't
+  # scaled like the s3 service below.
+  ec2-vpc:
+    build: .
+    environment:
+      SERVICE_MODE: ec2
+      DATABASE_URL: postgresql://aws_emulator:aws_emulator@db:5432/aws_emulator
+      EMULATOR_ACCOUNT_ID: "123456789012"
+    ports:
+      - "4566:4566"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # S3 REST API. Fully stateless per-process (Postgres for metadata, the
+  # s3-object-data volume for bytes), so this is the service meant to be
+  # scaled out: `docker compose up --scale s3=3`. No host port is published
+  # here directly - reach it through the s3-lb service below, which is what
+  # gives every replica one address to share.
+  s3:
+    build: .
+    environment:
+      SERVICE_MODE: s3
+      DATABASE_URL: postgresql://aws_emulator:aws_emulator@db:5432/aws_emulator
+      EMULATOR_ACCOUNT_ID: "123456789012"
+      S3_DATA_DIR: /data/objects
+      S3_AUTH_MODE: enforce
+    volumes:
+      - s3-object-data:/data/objects
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Round-robins across every `s3` replica using Docker Compose's embedded
+  # DNS (127.0.0.11) - this is the "pods behind a service" story on plain
+  # Compose, no Kubernetes required. This is the address Terraform's `s3`
+  # endpoint should point at.
+  s3-lb:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx-s3-lb.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "4567:4566"
+    depends_on:
+      - s3
+
+volumes:
+  db-data:
+  s3-object-data:
