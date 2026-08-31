@@ -1,0 +1,25 @@
+# Non-secret configuration shared by the ec2-vpc and s3 Deployments.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aws-emulator-config
+  namespace: aws-emulator
+data:
+  EMULATOR_ACCOUNT_ID: "123456789012"
+  S3_DATA_DIR: /data/objects
+  S3_AUTH_MODE: enforce
+  PORT: "4566"
+---
+# Example only - replace with a real secret (or an external-secrets /
+# sealed-secrets managed one) before using this outside of local testing.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aws-emulator-db
+  namespace: aws-emulator
+type: Opaque
+stringData:
+  POSTGRES_DB: aws_emulator
+  POSTGRES_USER: aws_emulator
+  POSTGRES_PASSWORD: aws_emulator
+  DATABASE_URL: postgresql://aws_emulator:aws_emulator@postgres:5432/aws_emulator

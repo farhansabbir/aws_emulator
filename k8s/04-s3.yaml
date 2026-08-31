@@ -1,0 +1,80 @@
+# S3 REST API. Fully stateless per-pod (Postgres holds all metadata, this
+# PVC holds object bytes) so this is the part of the emulator actually meant
+# to run as multiple replicas behind the Service below.
+#
+# IMPORTANT: every replica mounts the SAME volume, so it must be
+# ReadWriteMany (RWX). Most default StorageClasses (EBS, GCE PD, local
+# host-path provisioners) are ReadWriteOnce only. You need an RWX-capable
+# StorageClass - NFS, the EFS CSI driver, Azure Files, Longhorn, etc. - and
+# should set storageClassName below accordingly. If you just want to try
+# this on a single-node dev cluster (kind/minikube) without setting one up,
+# drop `replicas` to 1 and change accessModes to ReadWriteOnce; that loses
+# the multi-replica story but everything else still works.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: s3-object-data
+  namespace: aws-emulator
+spec:
+  accessModes: ["ReadWriteMany"]
+  # storageClassName: <your-rwx-storageclass>   # e.g. "nfs-client", "efs-sc"
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s3
+  namespace: aws-emulator
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: s3
+  template:
+    metadata:
+      labels:
+        app: s3
+    spec:
+      containers:
+        - name: s3
+          image: ghcr.io/farhansabbir/aws_emulator:latest
+          ports:
+            - containerPort: 4566
+          env:
+            - name: SERVICE_MODE
+              value: s3
+          envFrom:
+            - configMapRef:
+                name: aws-emulator-config
+            - secretRef:
+                name: aws-emulator-db
+          volumeMounts:
+            - name: object-data
+              mountPath: /data/objects
+          readinessProbe:
+            tcpSocket:
+              port: 4566
+            initialDelaySeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 4566
+            initialDelaySeconds: 10
+      volumes:
+        - name: object-data
+          persistentVolumeClaim:
+            claimName: s3-object-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s3
+  namespace: aws-emulator
+spec:
+  selector:
+    app: s3
+  ports:
+    - port: 4566
+      targetPort: 4566
+  # type: LoadBalancer  # or NodePort / an Ingress, depending on your cluster

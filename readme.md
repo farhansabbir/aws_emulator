@@ -1,264 +1,132 @@
-# Lightweight AWS Emulator for Terraform
+# Lightweight AWS Emulator
 
-A lightweight, in-memory AWS API emulator written in Python (Flask). This tool mocks the behavior of key AWS services (EC2, VPC, Networking) to allow for fast, cost-free local testing of Terraform configurations.
+A small, self-hosted emulator for **EC2/VPC**, **S3**, and **IAM** that speaks the real AWS wire protocols (EC2 query/XML, S3 REST/XML, IAM query/XML) closely enough for `terraform apply`, the `aws` CLI, and the AWS SDKs to work against it unmodified. No AWS account, no cost, fully local or containerized.
 
-It strictly adheres to the AWS XML API structure to satisfy the HashiCorp Terraform AWS Provider.
+* **EC2/VPC**: instances, VPCs, subnets, security groups (ingress + egress, real rule IDs), internet/NAT gateways, Elastic IPs, tags. In-memory, single process — this is a Terraform-testing convenience, not a service meant to run at scale.
+* **IAM**: users and long-term access keys, Postgres-backed. Identity/credential management only — no groups, roles, policy documents, or authorization evaluation.
+* **S3**: buckets and objects — CRUD, listing, multipart upload, tagging, versioning, and common bucket sub-resource configs — authenticated with **real SigV4 signature verification** against IAM-issued credentials. Postgres for metadata, a shared volume for object bytes, so it can run as many replicas behind a load balancer.
 
-## 🚀 Features
+## Architecture
 
-* **Compute**: EC2 Instances (Run, Describe, Terminate, Attribute modification).
-* **Networking**: VPCs, Subnets (Public/Private), Internet Gateways, NAT Gateways.
-* **Security**: Security Groups, Ingress/Egress rules, Network ACLs.
-* **IP Management**: Elastic IPs (EIP) and Public IP auto-assignment pools.
-* **Tagging**: Full resource tagging support.
+One codebase, one Docker image, three run modes via `SERVICE_MODE`:
 
-## 📦 Prerequisites
+| Mode | Serves | State | Scaling |
+|---|---|---|---|
+| `ec2` | EC2, VPC, IAM (management), STS | EC2/VPC in-memory; IAM in Postgres | Single replica |
+| `s3` | S3 REST API only | Postgres (metadata) + shared volume (object bytes); reads IAM from Postgres to verify SigV4 | Many replicas |
+| `all` (default) | Everything, one process | Same as above, combined | Single replica — the zero-config quickstart |
 
-* Python 3.x
-* Terraform
-* `pip`
+Why EC2/VPC don't scale out: their state is in-process memory. A `DescribeVpcs` on replica B wouldn't see a `CreateVpc` that hit replica A, which is strictly worse for Terraform testing. S3 is the part actually built to run as multiple replicas — it's stateless per-process, backed entirely by Postgres + a shared volume.
 
-## 🛠️ Quick Start
+Everything listens on one port (`4566` by default) and is routed by protocol, not by service-specific ports — this mirrors how the example Terraform provider block below points `ec2`/`iam`/`sts` and `s3` at the same host:port pair. `POST /` with a form field `Action` is EC2/IAM/STS query-protocol; everything else (`GET/PUT/DELETE/HEAD` on `/`, `/<bucket>`, `/<bucket>/<key>`) is S3 REST. S3 addressing is **path-style only** (`http://host:4566/bucket/key`) — no virtual-hosted-style (`bucket.host:4566/key`), which is why the example provider config below sets `s3_use_path_style = true`.
 
-### 1. Start the Emulator
-Run the Python server. This listens on port `4566` (simulating LocalStack/AWS endpoints).
+**Backward compatibility**: if `DATABASE_URL` isn't set, `ec2`/`all` mode still runs exactly like the original version of this project — a single hardcoded `emulator`/`123456789012` identity, no real IAM user/key management, EC2/VPC fully functional. Postgres is only required once you want real IAM users/keys or any S3 usage.
+
+## Quickstart
+
+### 1. Plain Python (no Docker) — EC2/VPC only, zero dependencies beyond Flask
 
 ```bash
-# Set up virtual environment
-python -m venv venv && source venv/bin/activate
-
-# Install dependencies (Flask)
-pip install flask
-
-# Run the emulator
+cd aws_emulator
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
 python3 main.py
 ```
 
-### 2. Run Terraform
-Open a new terminal window and run your Terraform infrastructure code against the local emulator.
+This runs in `all` mode by default, but with no `DATABASE_URL` set, IAM management and S3 are disabled (EC2/VPC work fully with the fixed `test`/`test` credentials). To get real IAM + S3 here too, export `DATABASE_URL` before running (see [Environment variables](#environment-variables)).
+
+### 2. Docker — everything in one container
 
 ```bash
-terraform init
-terraform apply -auto-approve
+docker build -t aws_emulator .
+docker run -p 4566:4566 \
+  -e DATABASE_URL=postgresql://user:pass@your-postgres-host:5432/aws_emulator \
+  -v s3-data:/data/objects \
+  aws_emulator
 ```
 
----
+Omit `DATABASE_URL` for EC2/VPC-only use (same fallback as above).
 
-## 📄 Configuration (`main.tf`)
+### 3. Docker Compose — the multi-service, scaled-S3 demo
 
-Save the following code as `main.tf`. This configuration sets up a complete VPC network with public/private subnets, gateways, and a web server instance.
+```bash
+docker compose up -d --build
+docker compose up -d --scale s3=3   # scale the S3 service out
+```
+
+This brings up: `db` (Postgres), `ec2-vpc` (single replica, published on `:4566`), `s3` (as many replicas as you scale to, no host port of its own), and `s3-lb` (nginx, published on `:4567`, round-robins across every `s3` replica using Docker's embedded DNS). Point Terraform's `ec2`/`iam`/`sts` endpoints at `:4566` and its `s3` endpoint at `:4567`.
+
+### 4. Kubernetes — the same topology, cluster-native
+
+```bash
+kubectl apply -f k8s/
+```
+
+Creates the `aws-emulator` namespace with a single-replica `postgres` Deployment+PVC, a single-replica `ec2-vpc` Deployment+Service, and a 3-replica `s3` Deployment+Service backed by a **ReadWriteMany** PVC (every `s3` pod mounts the same object-data volume — see the comments in `k8s/04-s3.yaml` for picking an RWX-capable StorageClass, e.g. NFS or the EFS CSI driver; single-node dev clusters can drop to `replicas: 1` + `ReadWriteOnce` instead). Update the image reference in `k8s/03-ec2-vpc.yaml`/`k8s/04-s3.yaml` if you're not using the published `ghcr.io/farhansabbir/aws_emulator` image.
+
+## Endpoint map
+
+| Deployment | EC2 / VPC / IAM / STS | S3 |
+|---|---|---|
+| Plain Python / `docker run` (`SERVICE_MODE=all`) | `http://localhost:4566` | `http://localhost:4566` |
+| Docker Compose | `http://localhost:4566` | `http://localhost:4567` (via `s3-lb`) |
+| Kubernetes | `http://ec2-vpc.aws-emulator.svc.cluster.local:4566` (or however you expose the `ec2-vpc` Service) | `http://s3.aws-emulator.svc.cluster.local:4566` (or however you expose the `s3` Service) |
+
+## Default credentials
+
+A seed IAM user is created automatically the first time IAM's schema initializes (only if no users exist yet): `user_name=emulator`, `access_key_id=test`, `secret_access_key=test` — so any existing Terraform config using `access_key = "test"` / `secret_key = "test"` keeps working unchanged. Create additional users/keys with the normal `aws_iam_user`/`aws_iam_access_key` Terraform resources or `aws iam create-user`/`create-access-key`.
+
+## Example Terraform provider block
 
 ```hcl
 provider "aws" {
   access_key                  = "test"
   secret_key                  = "test"
   region                      = "us-east-1"
-  s3_use_path_style           = false
+  s3_use_path_style           = true
   skip_credentials_validation = true
   skip_metadata_api_check     = true
 
   endpoints {
-    apigateway     = "http://localhost:4566"
-    apigatewayv2   = "http://localhost:4566"
-    cloudformation = "http://localhost:4566"
-    cloudwatch     = "http://localhost:4566"
-    dynamodb       = "http://localhost:4566"
-    ec2            = "http://localhost:4566"
-    es             = "http://localhost:4566"
-    elasticache    = "http://localhost:4566"
-    firehose       = "http://localhost:4566"
-    iam            = "http://localhost:4566"
-    kinesis        = "http://localhost:4566"
-    lambda         = "http://localhost:4566"
-    rds            = "http://localhost:4566"
-    redshift       = "http://localhost:4566"
-    route53        = "http://localhost:4566"
-    s3             = "[http://s3.localhost.localstack.cloud:4566](http://s3.localhost.localstack.cloud:4566)"
-    secretsmanager = "http://localhost:4566"
-    ses            = "http://localhost:4566"
-    sns            = "http://localhost:4566"
-    sqs            = "http://localhost:4566"
-    ssm            = "http://localhost:4566"
-    stepfunctions  = "http://localhost:4566"
-    sts            = "http://localhost:4566"
-  }
-}
-
-resource "aws_vpc" "default_vpc" {
-  cidr_block = "10.0.0.0/16"
-}
-
-resource "aws_subnet" "default_subnet" {
-  vpc_id     = aws_vpc.default_vpc.id
-  cidr_block = "10.0.10.0/24"
-  availability_zone = "us-east-1a"
-  map_public_ip_on_launch = true
-}
-
-resource "aws_subnet" "private_subnet" {
-  vpc_id     = aws_vpc.default_vpc.id
-  cidr_block = "10.0.100.0/24"
-  availability_zone = "us-east-1a"
-  map_public_ip_on_launch = false
-}
-
-resource "aws_internet_gateway" "default_igw" {
-    vpc_id = aws_vpc.default_vpc.id
-}
-
-resource "aws_security_group" "web" {
-    vpc_id = aws_vpc.default_vpc.id
-}
-
-resource "aws_security_group_rule" "web_allow_http_from_any" {
-  type = "ingress"
-  protocol = "tcp"
-  from_port = 80
-  to_port = 80
-  cidr_blocks = ["0.0.0.0/0"]
-  security_group_id = "${aws_security_group.web.id}"
-}
-
-resource "aws_instance" "app_server" {
-  ami           = "ami-12345678"
-  instance_type = "t2.micro"
-  subnet_id     = aws_subnet.default_subnet.id
-  
-  vpc_security_group_ids = [aws_security_group.web.id]
-
-  tags = {
-    Name = "Emulator-Instance"
-  }
-}
-
-data "aws_caller_identity" "current" {}
-
-resource "aws_eip" "nat" {
-  domain = "vpc"
-}
-
-resource "aws_nat_gateway" "example" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.default_subnet.id
-}
-
-# --- Outputs ---
-
-output "instance_ip" {
-  value = aws_instance.app_server.private_ip
-}
-
-output "outbound_ip_address" {
-  value = aws_eip.nat.public_ip
-}
-
-output "emulator_state_dump" {
-  description = "Full state of the Emulated AWS Environment (JSON formatted)"
-  value = {
-    identity = {
-      account_id = data.aws_caller_identity.current.account_id
-      user_arn   = data.aws_caller_identity.current.arn
-    }
-    instance = {
-      id          = aws_instance.app_server.id
-      private_ip  = aws_instance.app_server.private_ip
-      public_ip   = aws_instance.app_server.public_ip
-      subnet_id   = aws_instance.app_server.subnet_id
-      security_groups = aws_instance.app_server.vpc_security_group_ids
-      tags        = aws_instance.app_server.tags
-    }
-    vpc = {
-      id         = aws_vpc.default_vpc.id
-      cidr       = aws_vpc.default_vpc.cidr_block
-      subnet     = [{
-        id   = aws_subnet.default_subnet.id
-        cidr = aws_subnet.default_subnet.cidr_block
-        az   = aws_subnet.default_subnet.availability_zone
-        public_ip_on_launch = aws_subnet.default_subnet.map_public_ip_on_launch
-      },
-      {
-        id   = aws_subnet.private_subnet.id
-        cidr = aws_subnet.private_subnet.cidr_block
-        az   = aws_subnet.private_subnet.availability_zone
-        public_ip_on_launch = aws_subnet.private_subnet.map_public_ip_on_launch
-      }]
-      IGW = {
-        id = aws_internet_gateway.default_igw.id
-      }
-    }
+    ec2 = "http://localhost:4566"
+    iam = "http://localhost:4566"
+    sts = "http://localhost:4566"
+    s3  = "http://localhost:4566"   # or :4567 behind Docker Compose's s3-lb
   }
 }
 ```
 
----
+See `provider.tf`/`outputs.tf` in this repo for a fuller worked example (VPC, subnets, security groups, an instance, NAT/EIP).
 
-## ✅ Expected Output
+## What's implemented (and what isn't)
 
-When running `terraform apply`, the emulator correctly handles the creation order (VPC -> Subnet -> Security Groups -> Instances) and resource linking.
+### EC2 / VPC
 
-```text
-aws_eip.nat: Creating...
-aws_vpc.default_vpc: Creating...
-aws_eip.nat: Creation complete after 0s [id=eipalloc-893f2a2d]
-aws_vpc.default_vpc: Creation complete after 0s [id=vpc-caae0bfb]
-aws_internet_gateway.default_igw: Creating...
-aws_subnet.private_subnet: Creating...
-aws_security_group.web: Creating...
-aws_subnet.default_subnet: Creating...
-aws_subnet.private_subnet: Creation complete after 0s [id=subnet-1df33a73]
-aws_internet_gateway.default_igw: Creation complete after 0s [id=igw-f180c51e]
-aws_security_group.web: Creation complete after 0s [id=sg-848fd011]
-aws_security_group_rule.web_allow_http_from_any: Creating...
-aws_security_group_rule.web_allow_http_from_any: Creation complete after 0s [id=sgrule-4202308986]
-aws_subnet.default_subnet: Still creating... [00m10s elapsed]
-aws_subnet.default_subnet: Creation complete after 10s [id=subnet-4fe0ce8b]
-aws_nat_gateway.example: Creating...
-aws_instance.app_server: Creating...
-aws_nat_gateway.example: Creation complete after 0s [id=nat-783805c0]
-aws_instance.app_server: Still creating... [00m10s elapsed]
-aws_instance.app_server: Creation complete after 10s [id=i-529eb071]
+Instances (run/describe/start/stop/terminate, attribute get/modify), VPCs (with `cidrBlockAssociationSet`), subnets, security groups (ingress **and** egress, real `sgr-*` rule IDs, `DescribeSecurityGroupRules`), internet gateways, NAT gateways, Elastic IPs, tags. Not implemented: launch templates (stubbed success only), most `Describe*` filters beyond `vpc-id`/`subnet-id`/`group-id`/`instance-id`/etc., IPv6, VPC peering, Transit Gateway, Auto Scaling.
 
-Apply complete! Resources: 9 added, 0 changed, 0 destroyed.
+### IAM
 
-Outputs:
+Users and long-term access keys (create/list/delete/update-status), `GetCallerIdentity`/`GetUser` reflecting the actual signed-in caller. **Not implemented**: groups, roles, policy documents, or any authorization evaluation — this exists to back S3's SigV4 verification with real credentials, not to be a policy engine. Every EC2/VPC and IAM-management request is currently unauthenticated (matches the original project's behavior); only **S3** enforces signatures.
 
-emulator_state_dump = {
-  "identity" = {
-    "account_id" = "123456789012"
-    "user_arn" = "arn:aws:iam::123456789012:user/emulator"
-  }
-  "instance" = {
-    "id" = "i-529eb071"
-    "private_ip" = "10.0.1.10"
-    "public_ip" = "203.0.113.1"
-    "security_groups" = toset([
-      "sg-848fd011",
-    ])
-    "subnet_id" = "subnet-4fe0ce8b"
-    "tags" = tomap({})
-  }
-  "vpc" = {
-    "IGW" = {
-      "id" = "igw-f180c51e"
-    }
-    "cidr" = "10.0.0.0/16"
-    "id" = "vpc-caae0bfb"
-    "subnet" = [
-      {
-        "az" = "us-east-1a"
-        "cidr" = "10.0.10.0/24"
-        "id" = "subnet-4fe0ce8b"
-        "public_ip_on_launch" = true
-      },
-      {
-        "az" = "us-east-1a"
-        "cidr" = "10.0.100.0/24"
-        "id" = "subnet-1df33a73"
-        "public_ip_on_launch" = false
-      },
-    ]
-  }
-}
-instance_ip = "10.0.1.10"
-outbound_ip_address = "52.99.100.1"
-```
+### S3
+
+Buckets: create/delete/head/list, location, tagging, versioning, ACL/policy/CORS/encryption/public-access-block (stored and returned, **not enforced** — see below), `ListObjects`/`ListObjectsV2`, bulk delete. Objects: put/get/head/delete (incl. `?versionId=`), copy, tagging, multipart upload (create/upload-part/complete/abort/list-parts). Delete creates a delete marker when versioning is enabled.
+
+**Explicitly not implemented**: replication; lifecycle rule *execution* (config is stored/returned, nothing actually transitions or expires); object lock/retention/legal hold; requester-pays enforcement; real ACL/policy *authorization* (every request is already gated by SigV4 identity — there's no separate per-object authorization layer on top); event notifications; inventory/analytics configs; presigned-URL (query-string) auth (header-based SigV4, what the AWS provider and CLI use by default, is fully supported); virtual-hosted-style addressing; at-rest encryption of bytes; S3 Select; Access Points/Object Lambda.
+
+**SigV4 note**: the top-level request signature is fully verified against IAM-issued credentials. For chunked/streaming uploads (`x-amz-content-sha256: STREAMING-AWS4-HMAC-SHA256-PAYLOAD`), the chunk framing is decoded to recover the real object bytes, but individual chunk signatures aren't each independently re-verified.
+
+## Environment variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SERVICE_MODE` | `all` | `all`, `ec2`, or `s3` — see [Architecture](#architecture) |
+| `PORT` | `4566` | Port the app listens on |
+| `DATABASE_URL` | *(unset)* | Postgres DSN, e.g. `postgresql://user:pass@host:5432/db`. Required for IAM management and for any S3 usage; EC2/VPC work without it |
+| `S3_DATA_DIR` | `/data/objects` | Where S3 object bytes are stored (mount a shared volume here across replicas) |
+| `S3_AUTH_MODE` | `enforce` | `enforce` (real SigV4 verification) or `off` (skip auth entirely, for zero-friction local testing) |
+| `EMULATOR_ACCOUNT_ID` | `123456789012` | The fake AWS account ID used throughout ARNs and responses |
+
+## Known limitations across the board
+
+This is a testing/development tool, not a production AWS replacement: no rate limiting, no real billing/cost simulation, no CloudTrail/audit logging, minimal input validation (malformed requests may behave unpredictably rather than returning precise AWS error codes), and the feature scope above is deliberately bounded to what `terraform-provider-aws`, the `aws` CLI, and typical SDK usage actually exercise.

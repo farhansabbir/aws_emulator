@@ -1,3 +1,4 @@
+import os
 from resources_vpc import Vpc, Subnet, SecurityGroup, NetworkAcl, RouteTable
 from resources_ec2 import Instance, NetworkInterface
 from resources_gateways import ElasticIP, InternetGateway, NatGateway
@@ -9,14 +10,14 @@ class EC2Backend:
         self.nacls = {}; self.route_tables = {}
         self.ip_pool = [f"203.0.113.{i}" for i in range(1, 101)]
         self.eip_pool = [f"52.99.100.{i}" for i in range(1, 51)]
-        self.account_id = "123456789012"
+        self.account_id = os.environ.get("EMULATOR_ACCOUNT_ID", "123456789012")
 
     def pop_public_ip(self): return self.ip_pool.pop(0) if self.ip_pool else "0.0.0.0"
     def pop_eip(self): return self.eip_pool.pop(0) if self.eip_pool else "0.0.0.0"
 
     def create_vpc(self, cidr):
-        vpc = Vpc(cidr); self.vpcs[vpc.id] = vpc
-        sg = SecurityGroup(vpc.id, "default", "default VPC security group"); self.security_groups[sg.id] = sg
+        vpc = Vpc(cidr, owner_id=self.account_id); self.vpcs[vpc.id] = vpc
+        sg = SecurityGroup(vpc.id, "default", "default VPC security group", owner_id=self.account_id); self.security_groups[sg.id] = sg
         acl = NetworkAcl(vpc.id, is_default="true"); self.nacls[acl.id] = acl
         rtb = RouteTable(vpc.id, is_main="true"); self.route_tables[rtb.id] = rtb
         return vpc
@@ -31,7 +32,7 @@ class EC2Backend:
         eni = NetworkInterface(subnet_id, subnet.vpc_id, private_ip, sg_ids)
         eni.public_ip = public_ip
         self.enis[eni.id] = eni
-        inst = Instance(image_id, flavor, eni); self.instances[inst.id] = inst
+        inst = Instance(image_id, flavor, eni, availability_zone=subnet.az); self.instances[inst.id] = inst
         eni.attachment = {"instance_id": inst.id, "device_index": 0}
         return inst
 

@@ -1,0 +1,56 @@
+# EC2/VPC/IAM/STS control plane. EC2/VPC state lives in-process, in-memory -
+# deliberately kept at replicas: 1. Scaling this out would mean a
+# DescribeVpcs on one pod not seeing a CreateVpc that landed on another
+# (the Service load-balances randomly across pods), which is strictly worse
+# for what this is: a Terraform-testing convenience, not a service meant to
+# scale. See the s3 Deployment for the part of this project that's actually
+# built to run as many replicas.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ec2-vpc
+  namespace: aws-emulator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ec2-vpc
+  template:
+    metadata:
+      labels:
+        app: ec2-vpc
+    spec:
+      containers:
+        - name: ec2-vpc
+          image: ghcr.io/farhansabbir/aws_emulator:latest
+          ports:
+            - containerPort: 4566
+          env:
+            - name: SERVICE_MODE
+              value: ec2
+          envFrom:
+            - configMapRef:
+                name: aws-emulator-config
+            - secretRef:
+                name: aws-emulator-db
+          readinessProbe:
+            tcpSocket:
+              port: 4566
+            initialDelaySeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 4566
+            initialDelaySeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ec2-vpc
+  namespace: aws-emulator
+spec:
+  selector:
+    app: ec2-vpc
+  ports:
+    - port: 4566
+      targetPort: 4566
+  # type: LoadBalancer  # or NodePort / an Ingress, depending on your cluster
