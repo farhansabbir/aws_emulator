@@ -1,3 +1,18 @@
+terraform {
+  required_providers {
+    aws = {
+      source = "hashicorp/aws"
+      # AWS provider v6's aws_s3_bucket resource unconditionally calls
+      # S3 Control's ListTagsForResource as part of every create/read -
+      # a different (JSON REST) protocol this emulator doesn't implement,
+      # and since there's no s3control endpoint override, that call goes
+      # to real AWS and gets rejected. v5.x's S3 bucket resource doesn't
+      # do this. Pinned here so `aws_s3_bucket` keeps working out of the box.
+      version = "~> 5.0"
+    }
+  }
+}
+
 provider "aws" {
   access_key                  = "test"
   secret_key                  = "test"
@@ -22,7 +37,7 @@ provider "aws" {
     rds            = "http://localhost:4566"
     redshift       = "http://localhost:4566"
     route53        = "http://localhost:4566"
-    s3             = "http://s3.localhost.localstack.cloud:4566"
+    s3             = "http://localhost:4566" # ":4567" if you're using docker-compose's s3-lb
     secretsmanager = "http://localhost:4566"
     ses            = "http://localhost:4566"
     sns            = "http://localhost:4566"
@@ -103,5 +118,54 @@ resource "aws_nat_gateway" "example" {
 # The IP you use for whitelisting
 output "outbound_ip_address" {
   value = aws_eip.nat.public_ip
+}
+
+# --- IAM + S3 ---
+# A dedicated app identity (rather than reusing the seeded "test"/"test"
+# credentials) whose key S3 actually SigV4-authenticates against.
+resource "aws_iam_user" "app" {
+  name = "emulator-demo-app"
+}
+
+resource "aws_iam_access_key" "app" {
+  user = aws_iam_user.app.name
+}
+
+resource "aws_s3_bucket" "artifacts" {
+  bucket = "emulator-demo-artifacts"
+  # Versioning means "delete the object" only adds a delete marker (real S3
+  # behavior) - force_destroy makes `terraform destroy` clean up every
+  # version and delete marker before removing the bucket, same as AWS.
+  force_destroy = true
+}
+
+resource "aws_s3_bucket_versioning" "artifacts" {
+  bucket = aws_s3_bucket.artifacts.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_object" "readme" {
+  bucket       = aws_s3_bucket.artifacts.id
+  key          = "README.txt"
+  content      = "Uploaded by Terraform against the local AWS emulator.\n"
+  content_type = "text/plain"
+
+  tags = {
+    Environment = "emulator"
+  }
+}
+
+output "s3_bucket" {
+  value = aws_s3_bucket.artifacts.bucket
+}
+
+output "s3_object_etag" {
+  value = aws_s3_object.readme.etag
+}
+
+output "app_access_key_id" {
+  value = aws_iam_access_key.app.id
 }
 

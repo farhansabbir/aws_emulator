@@ -18,6 +18,9 @@ def dispatch(action, req):
     # --- VPC ---
     if action == "CreateVpc":
         vpc = backend.create_vpc(req.get("CidrBlock"))
+        tags = req.get_tag_specifications("vpc")
+        if tags:
+            vpc.add_tags(tags)
         return _xml(action, f"<vpc>{vpc.to_xml()}</vpc>")
 
     if action == "DescribeVpcs":
@@ -32,6 +35,9 @@ def dispatch(action, req):
     # --- Subnet ---
     if action == "CreateSubnet":
         sub = backend.create_subnet(req.get("VpcId"), req.get("CidrBlock"))
+        tags = req.get_tag_specifications("subnet")
+        if tags:
+            sub.add_tags(tags)
         return _xml(action, f"<subnet>{sub.to_xml()}</subnet>")
 
     if action == "ModifySubnetAttribute":
@@ -51,6 +57,9 @@ def dispatch(action, req):
     # --- Security Groups ---
     if action == "CreateSecurityGroup":
         sg = SecurityGroup(req.get("VpcId"), req.get("GroupName"), req.get("GroupDescription"), owner_id=backend.account_id)
+        tags = req.get_tag_specifications("security-group")
+        if tags:
+            sg.add_tags(tags)
         backend.security_groups[sg.id] = sg
         return _xml(action, f"<groupId>{sg.id}</groupId>")
 
@@ -115,6 +124,9 @@ def dispatch(action, req):
     if action == "RunInstances":
         sgs = req.get_list_prefix("SecurityGroupId.")
         inst = backend.run_instances(req.get("ImageId"), req.get("InstanceType"), req.get("SubnetId"), sgs)
+        tags = req.get_tag_specifications("instance")
+        if tags:
+            inst.add_tags(tags)
         xml = f"""<reservationId>r-{uuid.uuid4().hex[:8]}</reservationId><ownerId>{backend.account_id}</ownerId><instancesSet><item>{inst.to_xml()}</item></instancesSet>"""
         return _xml(action, xml)
 
@@ -149,8 +161,14 @@ def dispatch(action, req):
 
     if action == "DescribeInstanceAttribute":
         iid = req.get("InstanceId"); attr = req.get("Attribute")
-        val = backend.instances[iid].attrs.get(attr, "true") if iid in backend.instances else "true"
-        return _xml(action, f"<instanceId>{iid}</instanceId><{attr}><value>{val}</value></{attr}>")
+        val = backend.instances[iid].attrs.get(attr) if iid in backend.instances else None
+        # Real AWS omits <value> entirely for an attribute that was never
+        # set (e.g. userData on an instance launched without one) rather
+        # than inventing a placeholder - inventing one (this used to
+        # default everything to the string "true") corrupts attributes
+        # like userData, which the provider expects to be valid base64.
+        attr_xml = f"<{attr}><value>{val}</value></{attr}>" if val is not None else f"<{attr}/>"
+        return _xml(action, f"<instanceId>{iid}</instanceId>{attr_xml}")
 
     if action == "ModifyInstanceAttribute":
         iid = req.get("InstanceId")
@@ -207,6 +225,43 @@ def dispatch(action, req):
         if nid in backend.natgws: backend.natgws[nid].state = "deleted"
         return _xml(action, f"<natGatewayId>{nid}</natGatewayId>")
 
+    # --- Deletions ---
+    # Unlike NAT gateways (which linger with state=deleted - see above,
+    # matches real AWS), a deleted VPC/subnet/security group/internet
+    # gateway/EIP simply stops appearing in Describe* at all in real AWS.
+    # Terraform's delete-waiters for these poll until the resource is gone,
+    # not until some terminal state appears - so these need to actually be
+    # removed from the backend, or a `terraform destroy` hangs forever
+    # retrying a resource that (from its point of view) never finishes
+    # deleting.
+    if action == "DeleteVpc":
+        backend.vpcs.pop(req.get("VpcId"), None)
+        return _xml(action, "<return>true</return>")
+
+    if action == "DeleteSubnet":
+        backend.subnets.pop(req.get("SubnetId"), None)
+        return _xml(action, "<return>true</return>")
+
+    if action == "DeleteSecurityGroup":
+        backend.security_groups.pop(req.get("GroupId"), None)
+        return _xml(action, "<return>true</return>")
+
+    if action == "DetachInternetGateway":
+        igw = backend.igws.get(req.get("InternetGatewayId"))
+        if igw:
+            vpc_id = req.get("VpcId")
+            igw.attachments = [v for v in igw.attachments if v != vpc_id]
+        return _xml(action, "<return>true</return>")
+
+    if action == "DeleteInternetGateway":
+        backend.igws.pop(req.get("InternetGatewayId"), None)
+        return _xml(action, "<return>true</return>")
+
+    if action == "ReleaseAddress":
+        aid = req.get("AllocationId")
+        backend.eips.pop(aid, None)
+        return _xml(action, "<return>true</return>")
+
     # --- Tags ---
     if action == "CreateTags":
         rid = req.get("ResourceId.1")
@@ -222,7 +277,7 @@ def dispatch(action, req):
         return _xml(action, f"<tagSet>{items}</tagSet>")
 
     # --- Common Success Stubs ---
-    if action in ["CreateRoute", "DeleteRoute", "AssociateRouteTable", "ModifyNetworkInterfaceAttribute", "DescribeLaunchTemplates", "DeleteVpc", "DeleteSubnet", "DeleteSecurityGroup", "DetachInternetGateway", "DeleteInternetGateway", "ReleaseAddress", "DescribeNetworkInterfaces"]:
+    if action in ["CreateRoute", "DeleteRoute", "AssociateRouteTable", "ModifyNetworkInterfaceAttribute", "DescribeLaunchTemplates", "DescribeNetworkInterfaces"]:
         return _xml(action, "<return>true</return>")
 
     return None
