@@ -1,5 +1,11 @@
 FROM python:3.12-slim
 
+# Fixed numeric UID/GID (not just a name) so this lines up with
+# runAsUser/runAsGroup/fsGroup in the k8s manifests and docker-compose's
+# `user:` overrides without needing to look anything up at deploy time.
+RUN groupadd --gid 10001 appuser \
+    && useradd --uid 10001 --gid appuser --no-create-home --shell /usr/sbin/nologin appuser
+
 WORKDIR /app
 
 COPY aws_emulator/requirements.txt .
@@ -10,7 +16,15 @@ COPY aws_emulator/ .
 ENV SERVICE_MODE=all \
     PORT=4566 \
     S3_DATA_DIR=/data/objects \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# The app only ever writes here (S3 object bytes) - everything else (/app)
+# stays read-only at runtime, which is what lets the compose/k8s manifests
+# set readOnlyRootFilesystem: true.
+RUN mkdir -p /data/objects && chown -R appuser:appuser /data/objects
+
+USER appuser
 
 EXPOSE 4566
 VOLUME ["/data/objects"]

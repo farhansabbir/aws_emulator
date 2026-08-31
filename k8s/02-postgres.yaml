@@ -31,6 +31,16 @@ spec:
       labels:
         app: postgres
     spec:
+      # Not runAsNonRoot/runAsUser here: the official postgres image's
+      # entrypoint needs to start as root to fix up ownership/permissions
+      # on the mounted data dir before it drops to the postgres user
+      # itself (gosu) - forcing a non-root UID from the start skips that
+      # step entirely and the container fails to initialize. Verified
+      # against docker-compose's equivalent hardening: this exact
+      # capability set is what the entrypoint actually needs, no more.
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: postgres
           image: postgres:16-alpine
@@ -39,9 +49,26 @@ spec:
           envFrom:
             - secretRef:
                 name: aws-emulator-db
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "FOWNER", "DAC_OVERRIDE", "SETUID", "SETGID"]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            - name: tmp
+              mountPath: /tmp
+            - name: run
+              mountPath: /var/run/postgresql
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "aws_emulator"]
@@ -51,6 +78,10 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: postgres-data
+        - name: tmp
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

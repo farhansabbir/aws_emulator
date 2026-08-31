@@ -37,6 +37,16 @@ spec:
       labels:
         app: s3
     spec:
+      # fsGroup 10001 matches the image's `appuser` group (Dockerfile) so
+      # the PVC - which most CSI drivers otherwise mount root-owned - is
+      # group-writable by the UID the container actually runs as.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: s3
           image: ghcr.io/farhansabbir/aws_emulator:latest
@@ -50,9 +60,23 @@ spec:
                 name: aws-emulator-config
             - secretRef:
                 name: aws-emulator-db
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
           volumeMounts:
             - name: object-data
               mountPath: /data/objects
+            - name: tmp
+              mountPath: /tmp
           readinessProbe:
             tcpSocket:
               port: 4566
@@ -65,6 +89,8 @@ spec:
         - name: object-data
           persistentVolumeClaim:
             claimName: s3-object-data
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

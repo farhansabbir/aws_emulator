@@ -20,6 +20,17 @@ spec:
       labels:
         app: ec2-vpc
     spec:
+      # uid/gid 10001 is the `appuser` baked into the image (see
+      # Dockerfile) - matching it here isn't strictly required for
+      # runAsNonRoot to work (any non-zero UID would do), but keeps the
+      # filesystem ownership the image already set up (chown'd at build
+      # time) consistent with what actually runs.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: ec2-vpc
           image: ghcr.io/farhansabbir/aws_emulator:latest
@@ -33,6 +44,21 @@ spec:
                 name: aws-emulator-config
             - secretRef:
                 name: aws-emulator-db
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           readinessProbe:
             tcpSocket:
               port: 4566
@@ -41,6 +67,9 @@ spec:
             tcpSocket:
               port: 4566
             initialDelaySeconds: 10
+      volumes:
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

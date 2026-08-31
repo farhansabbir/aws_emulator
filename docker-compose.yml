@@ -14,6 +14,36 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # The official postgres image's entrypoint starts as root to fix up
+    # ownership/permissions on the mounted data dir, then drops to the
+    # postgres user - it needs these specific capabilities for that initial
+    # step (a fully-capless root can't chown/chmod paths it doesn't already
+    # own, or setuid away from root). Everything else stays dropped.
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        # `reservations` only takes effect under Swarm - plain `docker
+        # compose up` doesn't enforce it, kept here for documentation/
+        # swarm-compat.
+        reservations:
+          cpus: "0.25"
+          memory: 256M
 
   # EC2/VPC/IAM/STS "control plane". EC2/VPC state is in-memory, so this is
   # meant to run as a single instance - see the README for why it isn't
@@ -29,6 +59,25 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Runs as the non-root `appuser` (uid/gid 10001) baked into the image.
+    # read_only + tmpfs /tmp is safe here: this mode never writes to
+    # S3_DATA_DIR, and PYTHONDONTWRITEBYTECODE means nothing else needs a
+    # writable root filesystem either.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.1"
+          memory: 128M
 
   # S3 REST API. Fully stateless per-process (Postgres for metadata, the
   # s3-object-data volume for bytes), so this is the service meant to be
@@ -48,6 +97,23 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Same non-root user + read-only root as ec2-vpc; s3-object-data is a
+    # separate writable mount, unaffected by read_only.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.1"
+          memory: 128M
 
   # Round-robins across every `s3` replica using Docker Compose's embedded
   # DNS (127.0.0.11) - this is the "pods behind a service" story on plain
@@ -61,6 +127,31 @@ services:
       - "4567:4566"
     depends_on:
       - s3
+    # nginx:alpine's built-in non-root user (uid/gid 101). With the master
+    # process already non-root, nginx just runs workers as the same uid
+    # without trying to setuid further, so no `user` directive is needed in
+    # nginx-s3-lb.conf.
+    user: "101:101"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    # Explicit mode=1777: tmpfs mounts default to a mode that isn't
+    # writable by the non-root uid 101 nginx runs as here - nginx failed to
+    # mkdir its temp dirs under /var/cache/nginx until this was made explicit.
+    tmpfs:
+      - /tmp:mode=1777
+      - /var/cache/nginx:mode=1777
+      - /var/run:mode=1777
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+        reservations:
+          cpus: "0.05"
+          memory: 32M
 
 volumes:
   db-data:
