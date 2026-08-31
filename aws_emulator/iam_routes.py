@@ -5,6 +5,7 @@ otherwise falls back to the single hardcoded 'emulator' identity the
 emulator has always exposed, so the zero-config quickstart keeps working
 with no Postgres dependency.
 """
+import psycopg2.errors
 from flask import Response
 
 import db
@@ -86,6 +87,25 @@ def dispatch(action, req, request=None):
     if action == "ListRoles":
         return _query(action, "<Roles/><IsTruncated>false</IsTruncated>")
 
+    # No groups/roles/policies support (see module docstring) - but these
+    # read-only lookups still need to succeed-with-nothing, not error, since
+    # the provider calls them as part of unwinding a user before deleting it
+    # (an unhandled error here aborts the whole `terraform destroy`).
+    if action == "ListGroupsForUser":
+        return _query(action, "<Groups/><IsTruncated>false</IsTruncated>")
+    if action == "ListAttachedUserPolicies":
+        return _query(action, "<AttachedPolicies/><IsTruncated>false</IsTruncated>")
+    if action == "ListUserPolicies":
+        return _query(action, "<PolicyNames/><IsTruncated>false</IsTruncated>")
+    if action == "ListMFADevices":
+        return _query(action, "<MFADevices/><IsTruncated>false</IsTruncated>")
+    if action == "ListSigningCertificates":
+        return _query(action, "<Certificates/><IsTruncated>false</IsTruncated>")
+    if action == "ListServiceSpecificCredentials":
+        return _query(action, "<ServiceSpecificCredentials/>")
+    if action == "ListSSHPublicKeys":
+        return _query(action, "<SSHPublicKeys/><IsTruncated>false</IsTruncated>")
+
     if not use_db:
         # IAM management actions genuinely need Postgres; everything else
         # (GetCallerIdentity/GetUser/ListRoles) already works via fallback above.
@@ -94,7 +114,11 @@ def dispatch(action, req, request=None):
         return None
 
     if action == "CreateUser":
-        user = iam_db.create_user(req.get("UserName"), req.get("Path", "/"))
+        user_name = req.get("UserName")
+        try:
+            user = iam_db.create_user(user_name, req.get("Path", "/"))
+        except psycopg2.errors.UniqueViolation:
+            return _error(action, "EntityAlreadyExists", f"User with name {user_name} already exists.", status=409)
         return _query(action, f"<User>{_user_xml(user)}</User>")
 
     if action == "ListUsers":

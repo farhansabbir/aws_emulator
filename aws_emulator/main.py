@@ -1,5 +1,6 @@
 import os
 from flask import Flask, request, Response
+from werkzeug.exceptions import HTTPException
 
 from core import XML, RequestHelper
 
@@ -12,6 +13,21 @@ def create_app():
 
     enable_ec2 = mode in ("all", "ec2")
     enable_s3 = mode in ("all", "s3")
+
+    @app.errorhandler(Exception)
+    def handle_unexpected_error(e):
+        # A bug here surfacing as Flask's default HTML 500 page, or a bare
+        # connection reset, gets read by AWS SDKs as a transient/retryable
+        # failure - which then retries the SAME failing request for its
+        # full backoff budget (this is exactly how a permanent conflict,
+        # like an IAM user that already exists, turned into an apparent
+        # multi-minute hang during testing). A real XML error body at least
+        # keeps that failure mode honest and debuggable.
+        if isinstance(e, HTTPException):
+            return e
+        app.logger.exception("Unhandled exception")
+        body = '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>InternalFailure</Code><Message>An unexpected error occurred.</Message></Error>'
+        return Response(body, status=500, mimetype="application/xml")
 
     if enable_ec2:
         import db

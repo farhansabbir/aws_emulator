@@ -63,6 +63,23 @@ class RequestHelper:
                 items.append(v)
         return items
 
+    def get_tag_specifications(self, resource_type):
+        """Parses TagSpecification.N.ResourceType/Tag.M.Key/Value params
+        (how RunInstances etc. carry tags-at-creation-time) into a dict,
+        for every N whose ResourceType matches."""
+        tags = {}
+        n = 1
+        while f"TagSpecification.{n}.ResourceType" in self.data:
+            if self.data[f"TagSpecification.{n}.ResourceType"] == resource_type:
+                m = 1
+                while f"TagSpecification.{n}.Tag.{m}.Key" in self.data:
+                    key = self.data[f"TagSpecification.{n}.Tag.{m}.Key"]
+                    value = self.data.get(f"TagSpecification.{n}.Tag.{m}.Value", "")
+                    tags[key] = value
+                    m += 1
+            n += 1
+        return tags
+
     def get_filter(self, name):
         # 1. Search Generic Filters (Filter.x.Name)
         for k, v in self.data.items():

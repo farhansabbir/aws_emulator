@@ -79,6 +79,15 @@ A seed IAM user is created automatically the first time IAM's schema initializes
 ## Example Terraform provider block
 
 ```hcl
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0" # see "Terraform provider version" below
+    }
+  }
+}
+
 provider "aws" {
   access_key                  = "test"
   secret_key                  = "test"
@@ -96,7 +105,13 @@ provider "aws" {
 }
 ```
 
-See `provider.tf`/`outputs.tf` in this repo for a fuller worked example (VPC, subnets, security groups, an instance, NAT/EIP).
+See `provider.tf`/`outputs.tf` in this repo for a fuller worked example (VPC, subnets, security groups, an instance, NAT/EIP, an S3 bucket + object, an IAM user + access key) — verified end-to-end (`init` / `apply` / `plan` showing zero drift / `destroy`) against a real `terraform-provider-aws`.
+
+### Terraform provider version
+
+Pin `hashicorp/aws` to `~> 5.0`. Provider v6's `aws_s3_bucket` resource unconditionally calls S3 Control's `ListTagsForResource` on every create/read — a separate JSON REST protocol this emulator doesn't implement, and with no `s3control` endpoint override that call goes to real AWS and is rejected (`403 AccessDenied`), failing every `aws_s3_bucket`. v5.x's S3 bucket resource doesn't make that call. `aws_iam_user`/`aws_iam_access_key`/EC2·VPC resources aren't affected either way.
+
+If a bucket has versioning enabled, deleting an `aws_s3_object` only adds a delete marker (real S3 behavior) — the bucket still "contains" object versions, so a plain `terraform destroy` will fail with `BucketNotEmpty` on the bucket unless it has `force_destroy = true` (see `provider.tf`'s `aws_s3_bucket.artifacts` for an example), same as real AWS.
 
 ## What's implemented (and what isn't)
 

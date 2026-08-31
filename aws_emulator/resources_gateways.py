@@ -21,4 +21,4 @@ class NatGateway(AWSResource):
         self.subnet_id = subnet_id; self.alloc_id = alloc_id
         self.vpc_id = vpc_id; self.public_ip = public_ip; self.state = "available"
     def to_xml(self):
-        return f"""<natGatewayId>{self.id}</natGatewayId><subnetId>{self.subnet_id}</subnetId><vpcId>{self.vpc_id}</vpcId><state>{self.state}</state><natGatewayAddressSet><item><allocationId>{self.alloc_id}</allocationId><publicIp>{self.public_ip}</publicIp></item></natGatewayAddressSet>{self.render_tags()}"""
+        return f"""<natGatewayId>{self.id}</natGatewayId><subnetId>{self.subnet_id}</subnetId><vpcId>{self.vpc_id}</vpcId><state>{self.state}</state><connectivityType>public</connectivityType><createTime>{self.created_at}</createTime><natGatewayAddressSet><item><allocationId>{self.alloc_id}</allocationId><publicIp>{self.public_ip}</publicIp></item></natGatewayAddressSet>{self.render_tags()}"""
