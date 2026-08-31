@@ -13,11 +13,14 @@ class NetworkInterface(AWSResource):
         return f"""<networkInterfaceId>{self.id}</networkInterfaceId><subnetId>{self.subnet_id}</subnetId><vpcId>{self.vpc_id}</vpcId><description>{self.description}</description><status>in-use</status><privateIpAddress>{self.private_ip}</privateIpAddress><groupSet>{sg_xml}</groupSet><sourceDestCheck>true</sourceDestCheck>{assoc_xml}{attach_xml}{self.render_tags()}"""
 
 class Instance(AWSResource):
-    def __init__(self, image_id, flavor, eni):
+    def __init__(self, image_id, flavor, eni, availability_zone="us-east-1a"):
         super().__init__("i")
         self.image_id = image_id; self.flavor = flavor; self.eni = eni
+        self.availability_zone = availability_zone
         self.state_code = "16"; self.state_name = "running"
         self.attrs = {"disableApiTermination": "false", "instanceInitiatedShutdownBehavior": "stop", "sourceDestCheck": "true"}
     def to_xml(self):
         pub_ip_tag = f"<ipAddress>{self.eni.public_ip}</ipAddress>" if self.eni.public_ip else ""
-        return f"""<instanceId>{self.id}</instanceId><imageId>{self.image_id}</imageId><instanceState><code>{self.state_code}</code><name>{self.state_name}</name></instanceState><privateIpAddress>{self.eni.private_ip}</privateIpAddress>{pub_ip_tag}<vpcId>{self.eni.vpc_id}</vpcId><subnetId>{self.eni.subnet_id}</subnetId><instanceType>{self.flavor}</instanceType><networkInterfaceSet><item>{self.eni.to_xml()}</item></networkInterfaceSet>{self.render_tags()}"""
+        group_set = "".join([f"<item><groupId>{gid}</groupId><groupName>default</groupName></item>" for gid in self.eni.groups])
+        placement = f"<placement><availabilityZone>{self.availability_zone}</availabilityZone><groupName/><tenancy>default</tenancy></placement>"
+        return f"""<instanceId>{self.id}</instanceId><imageId>{self.image_id}</imageId><instanceState><code>{self.state_code}</code><name>{self.state_name}</name></instanceState><privateIpAddress>{self.eni.private_ip}</privateIpAddress>{pub_ip_tag}<vpcId>{self.eni.vpc_id}</vpcId><subnetId>{self.eni.subnet_id}</subnetId><instanceType>{self.flavor}</instanceType>{placement}<launchTime>{self.created_at}</launchTime><keyName/><monitoring><state>disabled</state></monitoring><architecture>x86_64</architecture><rootDeviceType>ebs</rootDeviceType><rootDeviceName>/dev/xvda</rootDeviceName><virtualizationType>hvm</virtualizationType><hypervisor>xen</hypervisor><sourceDestCheck>{self.attrs.get('sourceDestCheck', 'true')}</sourceDestCheck><groupSet>{group_set}</groupSet><networkInterfaceSet><item>{self.eni.to_xml()}</item></networkInterfaceSet>{self.render_tags()}"""

@@ -4,13 +4,44 @@ import datetime
 class XML:
     """Helper to generate XML strings."""
     @staticmethod
-    def wrap(action, content):
+    def wrap(action, content, namespace="http://ec2.amazonaws.com/doc/2016-11-15/"):
+        """EC2-protocol envelope: result elements flattened directly under
+        <ActionResponse>, with a bare <requestId> sibling."""
         req_id = str(uuid.uuid4())
         return f"""<?xml version="1.0" encoding="UTF-8"?>
-        <{action}Response xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+        <{action}Response xmlns="{namespace}">
             {content}
             <requestId>{req_id}</requestId>
         </{action}Response>"""
+
+    @staticmethod
+    def wrap_query(action, result_content, namespace="https://iam.amazonaws.com/doc/2010-05-08/"):
+        """AWS "query" protocol envelope used by IAM/STS: results nested in
+        <ActionResult>, with the request id under <ResponseMetadata>."""
+        req_id = str(uuid.uuid4())
+        return f"""<?xml version="1.0" encoding="UTF-8"?>
+        <{action}Response xmlns="{namespace}">
+            <{action}Result>
+                {result_content}
+            </{action}Result>
+            <ResponseMetadata>
+                <RequestId>{req_id}</RequestId>
+            </ResponseMetadata>
+        </{action}Response>"""
+
+    @staticmethod
+    def error_query(code, message, status=400, error_type="Sender", namespace="https://iam.amazonaws.com/doc/2010-05-08/"):
+        req_id = str(uuid.uuid4())
+        body = f"""<?xml version="1.0" encoding="UTF-8"?>
+        <ErrorResponse xmlns="{namespace}">
+            <Error>
+                <Type>{error_type}</Type>
+                <Code>{code}</Code>
+                <Message>{message}</Message>
+            </Error>
+            <RequestId>{req_id}</RequestId>
+        </ErrorResponse>"""
+        return body, status
 
     @staticmethod
     def dump_list(wrapper_name, item_list):
